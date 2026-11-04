@@ -1,0 +1,6 @@
+# Basura local que nunca debe subirse (redundante con el .gitignore del profe,
+# pero se mantiene aquí por si cambia el de la raíz)
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store
+.venv/
