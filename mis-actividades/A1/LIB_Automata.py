@@ -3,29 +3,62 @@ import imageio.v2 as imageio
 from matplotlib import pyplot
 
 
+RULES = {
+    (1, 1, 1): 0,
+    (1, 1, 0): 1,
+    (1, 0, 1): 0,
+    (1, 0, 0): 1,
+    (0, 1, 1): 1,
+    (0, 1, 0): 0,
+    (0, 0, 1): 1,
+    (0, 0, 0): 0,
+}
+
+
 class XORCell(mesa.Agent):
+
     def __init__(self, model, row, col):
         super().__init__(model)
         self.row = row
         self.col = col
         self.state = 0
+        self.next_state = 0
+
+    def compute(self, wrap):
+        grid = self.model.grid
+        size = self.model.size
+        up = (self.row - 1) % size
+
+        if wrap:
+            left = grid[up, (self.col - 1) % size]
+            right = grid[up, (self.col + 1) % size]
+        else:
+            left = grid[up, self.col - 1] if self.col > 0 else 0
+            right = grid[up, self.col + 1] if self.col < size - 1 else 0
+        center = grid[up, self.col]
+
+        self.next_state = RULES[(int(left), int(center), int(right))]
+
+    def advance(self):
+        self.state = self.next_state
+        self.model.grid[self.row, self.col] = self.state
+
 
 class XORAutomaton(mesa.Model):
-    def __init__(self, size=50):
-        super().__init__()
+    def __init__(self, size=50, seed=None):
+        super().__init__(rng=seed)
         self.size = size
         self.grid = numpy.zeros((size, size), dtype=numpy.uint8)
-
         self.cells = [
             [XORCell(self, r, c) for c in range(size)]
             for r in range(size)
         ]
 
-        # Primera fila aleatoria (Simulation 1)
         for c in range(size):
             value = self.random.randint(0, 1)
             self.grid[0, c] = value
             self.cells[0][c].state = value
+
         self.step_count = 0
 
     def step(self):
@@ -34,50 +67,74 @@ class XORAutomaton(mesa.Model):
             self.running = False
             return
 
-        previous = self.grid[r - 1]
-        new_row = numpy.zeros(self.size, dtype=numpy.uint8)
-
-        for c in range(self.size):
-            left = previous[c - 1] if c > 0 else 0
-            right = previous[c + 1] if c < self.size - 1 else 0
-            new_row[c] = left ^ right; # xor operation
-
-        self.grid[r] = new_row
-
-        for c in range(self.size):
-            self.cells[r][c].state = int(new_row[c])
+        row = self.cells[r]
+        for cell in row:
+            cell.compute(wrap=False)
+        for cell in row:
+            cell.advance()
 
         self.step_count += 1
-
         if self.step_count >= self.size - 1:
             self.running = False
 
+
+class FullAutomaton(mesa.Model):
+    def __init__(self, size=50, seed=None):
+        super().__init__(rng=seed)
+        self.size = size
+        self.grid = numpy.zeros((size, size), dtype=numpy.uint8)
+        self.cells = [
+            [XORCell(self, r, c) for c in range(size)]
+            for r in range(size)
+        ]
+
+        for r in range(size):
+            for c in range(size):
+                value = self.random.randint(0, 1)
+                self.grid[r, c] = value
+                self.cells[r][c].state = value
+
+        self.step_count = 0
+
+    def step(self):
+        self.agents.do("compute", wrap=True)
+        self.agents.do("advance")
+        self.step_count += 1
+
+
+def draw_frame(grid, title, size):
+    fig, ax = pyplot.subplots(figsize=(6, 6))
+    ax.imshow(grid, cmap="binary", interpolation="nearest", vmin=0, vmax=1)
+    ax.set_title(title)
+    ax.set_xlabel("Column")
+    ax.set_ylabel("Row")
+    ax.set_xticks(numpy.arange(0, size, 5))
+    ax.set_yticks(numpy.arange(0, size, 5))
+    ax.grid(False)
+    fig.tight_layout()
+
+    fig.canvas.draw()
+    frame = numpy.asarray(fig.canvas.buffer_rgba())[:, :, :3].copy()
+    pyplot.close(fig)
+    return frame
+
+
 def Automata2GIFF(Options):
 
-    GridSize = Options.GridSize;
-
-    model = XORAutomaton(size = GridSize);
+    GridSize = Options.GridSize
+    Seed = getattr(Options, "Seed", None)
     frames = []
 
-    # Initial frame plus one frame for each generated row.
+    model = XORAutomaton(size=GridSize, seed=Seed)
     for _ in range(GridSize):
-        fig, ax = pyplot.subplots(figsize=(6, 6))
-        ax.imshow(model.grid, cmap="binary", interpolation="nearest", vmin=0, vmax=1)
-        ax.set_title(f"XOR Cellular Automaton — Step {model.step_count}")
-        ax.set_xlabel("Column")
-        ax.set_ylabel("Row")
-        ax.set_xticks(numpy.arange(0, GridSize, 5))
-        ax.set_yticks(numpy.arange(0, GridSize, 5))
-        ax.grid(False)
-        fig.tight_layout()
-
-        fig.canvas.draw()
-        frame = numpy.asarray(fig.canvas.buffer_rgba())[:, :, :3].copy()
-        frames.append(frame)
-        pyplot.close(fig)
-
+        frames.append(draw_frame(model.grid, f"Simulation 1 — Step {model.step_count}", GridSize))
         if model.running:
             model.step()
 
-    imageio.mimsave(Options.File, frames, duration =1 / Options.FPS, loop=0)
+    model = FullAutomaton(size=GridSize, seed=Seed)
+    for _ in range(GridSize):
+        frames.append(draw_frame(model.grid, f"Simulation 2 — Step {model.step_count}", GridSize))
+        model.step()
+
+    imageio.mimsave(Options.File, frames, duration=1 / Options.FPS, loop=0)
     print(f"GIF saved as: {Options.File}")
