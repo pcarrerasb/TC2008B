@@ -5,7 +5,7 @@ in vec4 a_color;
 out vec4 v_color;
 
 uniform vec2 u_resolution;
-uniform vec2 u_translation;
+uniform mat3 u_transforms;
 
 vec4 projection2D(vec2 position, vec2 resolution) {
     // Convertir de pixeles a 0.0 - 1.0
@@ -22,8 +22,8 @@ vec4 projection2D(vec2 position, vec2 resolution) {
 }
 
 void main() {
-    // Mover la cara sumando la traslacion (por ahora sin matrices)
-    vec2 position = a_position + u_translation;
+    // Vector de 3 con el punto y un 1, para multiplicar por la matriz
+    vec2 position = (u_transforms * vec3(a_position, 1)).xy;
 
     gl_Position = projection2D(position, u_resolution);
 

@@ -9,15 +9,29 @@
 'use strict';
 
 import * as twgl from 'twgl-base.js';
+import GUI from 'lil-gui';
+import { V2, M3, type Mat3 } from '../libs/2d-lib.js';
 
 // Shaders en archivos separados
 import vsGLSL from './vs_cara.glsl?raw';
 import fsGLSL from './fs_cara.glsl?raw';
 
 // Colores (RGBA)
-const AMARILLO = [1.0, 0.85, 0.1, 1];
+// La cara lleva alpha 0: asi el shader sabe que debe usar el color de lil-gui
+const AMARILLO = [1.0, 0.85, 0.1, 0];
 const NEGRO = [0.1, 0.1, 0.1, 1];
 const ROJO = [0.7, 0.1, 0.1, 1];
+
+// Valores que se cambian con lil-gui
+const datosCara = {
+    t: { x: 0, y: 0 },          // traslacion
+    rr: { z: 0 },               // rotacion en radianes
+    s: { x: 1, y: 1 },          // escala
+    color: [1.0, 0.85, 0.1, 1], // color de la cara
+};
+const datosPivote = {
+    t: { x: 0, y: 0 },          // traslacion
+};
 
 // Genera la cara alrededor del punto (0, 0)
 function cara(radio: number): twgl.Arrays {
@@ -153,6 +167,17 @@ function main(): void {
         throw new Error('No se pudo crear el VAO');
     }
 
+    // Ajustar el canvas antes de calcular las posiciones iniciales
+    twgl.resizeCanvasToDisplaySize(canvas);
+
+    // Posiciones iniciales: la cara al centro y el pivote 250 px a la izquierda
+    datosCara.t.x = gl.canvas.width / 2;
+    datosCara.t.y = gl.canvas.height / 2;
+    datosPivote.t.x = gl.canvas.width / 2 - 250;
+    datosPivote.t.y = gl.canvas.height / 2;
+
+    setupUI(gl);
+
     // Dibujar en cada frame
     const frame = (): void => {
         drawScene(gl, programInfo, caraVao, caraBuffer, pivoteVao, pivoteBuffer);
@@ -161,7 +186,54 @@ function main(): void {
     requestAnimationFrame(frame);
 }
 
-// Dibuja la cara al centro y el pivote a su izquierda
+// Menu de lil-gui, con la misma estructura de la actividad
+function setupUI(gl: WebGL2RenderingContext): void {
+    const gui = new GUI();
+
+    const modelFolder = gui.addFolder('Model');
+
+    const traFolder = modelFolder.addFolder('Translation');
+    traFolder.add(datosCara.t, 'x', 0, gl.canvas.width);
+    traFolder.add(datosCara.t, 'y', 0, gl.canvas.height);
+
+    const rotFolder = modelFolder.addFolder('Rotation');
+    rotFolder.add(datosCara.rr, 'z', 0, Math.PI * 2);
+
+    const scaFolder = modelFolder.addFolder('Scale');
+    scaFolder.add(datosCara.s, 'x', -5, 5);
+    scaFolder.add(datosCara.s, 'y', -5, 5);
+
+    const colorFolder = modelFolder.addFolder('Color');
+    colorFolder.addColor(datosCara, 'color');
+
+    const pivotFolder = gui.addFolder('Pivot');
+    const pivotTraFolder = pivotFolder.addFolder('Translation');
+    pivotTraFolder.add(datosPivote.t, 'x', 0, gl.canvas.width);
+    pivotTraFolder.add(datosPivote.t, 'y', 0, gl.canvas.height);
+}
+
+// Matriz de la cara. El orden de las transformaciones solo esta aqui.
+function matrizCara(): Mat3 {
+    const posPivote = V2.create(datosPivote.t.x, datosPivote.t.y);
+
+    const escala = M3.scale(V2.create(datosCara.s.x, datosCara.s.y));
+    const traslacion = M3.translation(V2.create(datosCara.t.x, datosCara.t.y));
+    const pivoteAlOrigen = M3.translation(V2.scale(posPivote, -1));
+    const rotacion = M3.rotation(datosCara.rr.z);
+    const origenAlPivote = M3.translation(posPivote);
+
+    // Cada multiply pone la nueva matriz a la izquierda,
+    // asi que se aplican en este orden, de arriba hacia abajo:
+    let m = M3.identity();
+    m = M3.multiply(escala, m);          // 1. escala (sobre el centro de la cara)
+    m = M3.multiply(traslacion, m);      // 2. traslacion
+    m = M3.multiply(pivoteAlOrigen, m);  // 3. rotacion alrededor del pivote:
+    m = M3.multiply(rotacion, m);        //    llevar el pivote al origen, rotar
+    m = M3.multiply(origenAlPivote, m);  //    y regresar
+    return m;
+}
+
+// Dibuja la cara y el pivote con sus matrices
 function drawScene(
     gl: WebGL2RenderingContext,
     programInfo: twgl.ProgramInfo,
@@ -181,17 +253,18 @@ function drawScene(
     gl.bindVertexArray(caraVao);
     twgl.setUniforms(programInfo, {
         u_resolution: [gl.canvas.width, gl.canvas.height],
-        // El centro del canvas
-        u_translation: [gl.canvas.width / 2, gl.canvas.height / 2],
+        u_transforms: matrizCara(),
+        u_color: datosCara.color,
     });
     twgl.drawBufferInfo(gl, caraBuffer);
 
-    // --- Pivote ---
+    // --- Pivote: solo traslacion ---
+    const matrizPivote = M3.translation(V2.create(datosPivote.t.x, datosPivote.t.y));
+
     gl.bindVertexArray(pivoteVao);
     twgl.setUniforms(programInfo, {
         u_resolution: [gl.canvas.width, gl.canvas.height],
-        // 250 pixeles a la izquierda del centro
-        u_translation: [gl.canvas.width / 2 - 250, gl.canvas.height / 2],
+        u_transforms: matrizPivote,
     });
     twgl.drawBufferInfo(gl, pivoteBuffer);
 }
