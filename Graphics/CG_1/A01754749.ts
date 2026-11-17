@@ -95,6 +95,40 @@ function cara(radio: number): twgl.Arrays {
     return arrays;
 }
 
+// Genera el pivote: un rombo gris centrado en (0, 0)
+function pivote(tamano: number): twgl.Arrays {
+    const arrays: twgl.Arrays = {
+        a_position: {
+            numComponents: 2,
+            data: [
+                tamano, 0,    // derecha
+                0, tamano,    // arriba
+                -tamano, 0,   // izquierda
+                0, -tamano,   // abajo
+            ]
+        },
+        a_color: {
+            numComponents: 4,
+            data: [
+                0.6, 0.6, 0.6, 1,
+                0.6, 0.6, 0.6, 1,
+                0.6, 0.6, 0.6, 1,
+                0.6, 0.6, 0.6, 1,
+            ]
+        },
+        indices: {
+            numComponents: 3,
+            // Dos triangulos forman el rombo
+            data: [
+                0, 1, 2,
+                2, 3, 0,
+            ]
+        }
+    };
+
+    return arrays;
+}
+
 function main(): void {
     const canvas = document.querySelector('canvas');
     if (!canvas) {
@@ -107,39 +141,59 @@ function main(): void {
 
     const programInfo = twgl.createProgramInfo(gl, [vsGLSL, fsGLSL]);
 
-    const arrays = cara(150);
-    const bufferInfo = twgl.createBufferInfoFromArrays(gl, arrays);
-    const vao = twgl.createVAOFromBufferInfo(gl, programInfo, bufferInfo);
-    if (!vao) {
+    // Cara: su propio buffer y VAO
+    const caraBuffer = twgl.createBufferInfoFromArrays(gl, cara(150));
+    const caraVao = twgl.createVAOFromBufferInfo(gl, programInfo, caraBuffer);
+
+    // Pivote: otro buffer y otro VAO, con el mismo programInfo
+    const pivoteBuffer = twgl.createBufferInfoFromArrays(gl, pivote(30));
+    const pivoteVao = twgl.createVAOFromBufferInfo(gl, programInfo, pivoteBuffer);
+
+    if (!caraVao || !pivoteVao) {
         throw new Error('No se pudo crear el VAO');
     }
 
-    drawScene(gl, vao, programInfo, bufferInfo);
+    // Dibujar en cada frame
+    const frame = (): void => {
+        drawScene(gl, programInfo, caraVao, caraBuffer, pivoteVao, pivoteBuffer);
+        requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
 }
 
-// Dibuja la cara al centro del canvas
+// Dibuja la cara al centro y el pivote a su izquierda
 function drawScene(
     gl: WebGL2RenderingContext,
-    vao: WebGLVertexArrayObject,
     programInfo: twgl.ProgramInfo,
-    bufferInfo: twgl.BufferInfo,
+    caraVao: WebGLVertexArrayObject,
+    caraBuffer: twgl.BufferInfo,
+    pivoteVao: WebGLVertexArrayObject,
+    pivoteBuffer: twgl.BufferInfo,
 ): void {
     // El canvas es el del HTML, no uno offscreen
     twgl.resizeCanvasToDisplaySize(gl.canvas as HTMLCanvasElement);
 
     gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
 
-    const uniforms = {
+    gl.useProgram(programInfo.program);
+
+    // --- Cara ---
+    gl.bindVertexArray(caraVao);
+    twgl.setUniforms(programInfo, {
         u_resolution: [gl.canvas.width, gl.canvas.height],
         // El centro del canvas
         u_translation: [gl.canvas.width / 2, gl.canvas.height / 2],
-    };
+    });
+    twgl.drawBufferInfo(gl, caraBuffer);
 
-    gl.useProgram(programInfo.program);
-    twgl.setUniforms(programInfo, uniforms);
-
-    gl.bindVertexArray(vao);
-    twgl.drawBufferInfo(gl, bufferInfo);
+    // --- Pivote ---
+    gl.bindVertexArray(pivoteVao);
+    twgl.setUniforms(programInfo, {
+        u_resolution: [gl.canvas.width, gl.canvas.height],
+        // 250 pixeles a la izquierda del centro
+        u_translation: [gl.canvas.width / 2 - 250, gl.canvas.height / 2],
+    });
+    twgl.drawBufferInfo(gl, pivoteBuffer);
 }
 
 main()
