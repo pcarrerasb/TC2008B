@@ -17,10 +17,19 @@ import vsGLSL from './vs_cara.glsl?raw';
 import fsGLSL from './fs_cara.glsl?raw';
 
 // Colores (RGBA)
-// La cara lleva alpha 0: asi el shader sabe que debe usar el color de lil-gui
+// La cara lleva alpha 0 como marca: el fragment shader la pinta
+// con el color de lil-gui (ver fs_cara.glsl)
 const AMARILLO = [1.0, 0.85, 0.1, 0];
 const NEGRO = [0.1, 0.1, 0.1, 1];
 const ROJO = [0.7, 0.1, 0.1, 1];
+
+// Opciones del dropdown: orden en que se aplican las matrices a la cara
+const ORDENES = [
+    'scale -> translation -> rotation',
+    'translation -> scale -> rotation',
+    'rotation -> translation -> scale',
+    'rotation -> scale -> translation',
+];
 
 // Valores que se cambian con lil-gui
 const datosCara = {
@@ -28,6 +37,7 @@ const datosCara = {
     rr: { z: 0 },               // rotacion en radianes
     s: { x: 1, y: 1 },          // escala
     color: [1.0, 0.85, 0.1, 1], // color de la cara
+    order: ORDENES[0],          // orden de las transformaciones
 };
 const datosPivote = {
     t: { x: 0, y: 0 },          // traslacion
@@ -190,6 +200,9 @@ function main(): void {
 function setupUI(gl: WebGL2RenderingContext): void {
     const gui = new GUI();
 
+    // Dropdown para elegir el orden de las transformaciones
+    gui.add(datosCara, 'order', ORDENES);
+
     const modelFolder = gui.addFolder('Model');
 
     const traFolder = modelFolder.addFolder('Translation');
@@ -218,18 +231,38 @@ function matrizCara(): Mat3 {
 
     const escala = M3.scale(V2.create(datosCara.s.x, datosCara.s.y));
     const traslacion = M3.translation(V2.create(datosCara.t.x, datosCara.t.y));
-    const pivoteAlOrigen = M3.translation(V2.scale(posPivote, -1));
-    const rotacion = M3.rotation(datosCara.rr.z);
-    const origenAlPivote = M3.translation(posPivote);
+
+    // Rotacion alrededor del pivote, como un solo bloque:
+    // llevar el pivote al origen, rotar y regresar
+    let rotacion = M3.translation(V2.scale(posPivote, -1));
+    rotacion = M3.multiply(M3.rotation(datosCara.rr.z), rotacion);
+    rotacion = M3.multiply(M3.translation(posPivote), rotacion);
 
     // Cada multiply pone la nueva matriz a la izquierda,
-    // asi que se aplican en este orden, de arriba hacia abajo:
+    // asi que se aplican en el orden en que aparecen (A -> B -> C da C * B * A)
     let m = M3.identity();
-    m = M3.multiply(escala, m);          // 1. escala (sobre el centro de la cara)
-    m = M3.multiply(traslacion, m);      // 2. traslacion
-    m = M3.multiply(pivoteAlOrigen, m);  // 3. rotacion alrededor del pivote:
-    m = M3.multiply(rotacion, m);        //    llevar el pivote al origen, rotar
-    m = M3.multiply(origenAlPivote, m);  //    y regresar
+    switch (datosCara.order) {
+        case 'scale -> translation -> rotation':
+            m = M3.multiply(escala, m);
+            m = M3.multiply(traslacion, m);
+            m = M3.multiply(rotacion, m);
+            break;
+        case 'translation -> scale -> rotation':
+            m = M3.multiply(traslacion, m);
+            m = M3.multiply(escala, m);
+            m = M3.multiply(rotacion, m);
+            break;
+        case 'rotation -> translation -> scale':
+            m = M3.multiply(rotacion, m);
+            m = M3.multiply(traslacion, m);
+            m = M3.multiply(escala, m);
+            break;
+        case 'rotation -> scale -> translation':
+            m = M3.multiply(rotacion, m);
+            m = M3.multiply(escala, m);
+            m = M3.multiply(traslacion, m);
+            break;
+    }
     return m;
 }
 
