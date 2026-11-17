@@ -1,6 +1,6 @@
 /*
- * CG_1: cara 2D hecha con triangulos
- * Objetivo 1: modelo de la cara, dibujado estatico al centro
+ * Script to draw a 2D smiley face made of triangles, and apply
+ * transformations to it, rotating around a pivot
  *
  * Patricio Carreras Báez, A01754749
  * 2026-11-10
@@ -10,106 +10,274 @@
 
 import * as twgl from 'twgl-base.js';
 import GUI from 'lil-gui';
-import { V2, M3, type Mat3 } from '../libs/2d-lib.js';
+import { V2, M3, type Vec2, type Mat3 } from '../libs/2d-lib.js';
+import { Scene } from '../libs/scene.js';
+import { type Color } from '../libs/color.js';
 
-// Shaders en archivos separados
-import vsGLSL from './vs_cara.glsl?raw';
-import fsGLSL from './fs_cara.glsl?raw';
+// Import the shaders from external files
+import vsGLSL from './vs_matrices_vcolor.glsl?raw';
+import fsGLSL from './fs_vertex_color.glsl?raw';
 
-// Colores (RGBA)
-// La cara lleva alpha 0 como marca: el fragment shader la pinta
-// con el color de lil-gui (ver fs_cara.glsl)
-const AMARILLO = [1.0, 0.85, 0.1, 0];
-const NEGRO = [0.1, 0.1, 0.1, 1];
-const ROJO = [0.7, 0.1, 0.1, 1];
+// Radius of the face, in pixels
+const FACE_RADIUS = 150;
 
-// Opciones del dropdown: orden en que se aplican las matrices a la cara
-const ORDENES = [
+// Options for the order in which the transforms are applied to the model
+const ORDERS = [
     'scale -> translation -> rotation',
     'translation -> scale -> rotation',
     'rotation -> translation -> scale',
     'rotation -> scale -> translation',
 ];
 
-// Valores que se cambian con lil-gui
-const datosCara = {
-    t: { x: 0, y: 0 },          // traslacion
-    rr: { z: 0 },               // rotacion en radianes
-    s: { x: 1, y: 1 },          // escala
-    color: [1.0, 0.85, 0.1, 1], // color de la cara
-    order: ORDENES[0],          // orden de las transformaciones
-};
-const datosPivote = {
-    t: { x: 0, y: 0 },          // traslacion
-};
 
-// Genera la cara alrededor del punto (0, 0)
-function cara(radio: number): twgl.Arrays {
+/*
+ * Subclass of Scene with the particular objects and settings for this program.
+ * Specifies the objects that will be used, and the UI operations available.
+ */
+class FaceScene extends Scene {
+    // Order of the transforms, selected in the UI
+    order: string = ORDERS[0];
+
+    constructor(gl: WebGL2RenderingContext) {
+        super(gl, vsGLSL, fsGLSL);
+
+        // Create the objects for this scene
+        const faceColor: Color = [1.0, 0.85, 0.1, 1];
+        const model = this.addObject('model', smileyFace(FACE_RADIUS, faceColor),
+            faceColor);
+        model.transforms.t.x = gl.canvas.width / 2;
+        model.transforms.t.y = gl.canvas.height / 2;
+
+        // The pivot starts to the left of the face
+        const pivot = this.addObject('pivot', diamond(30),
+            [ 0.6, 0.6, 0.6, 1]);
+        pivot.transforms.t.x = gl.canvas.width / 2 - 250;
+        pivot.transforms.t.y = gl.canvas.height / 2;
+    }
+
+    // Method to draw the scene.
+    protected render(): void {
+        const { gl, programInfo } = this;
+        const model = this.getObject('model');
+        const pivot = this.getObject('pivot');
+
+        // Vector to the position of the model
+        const v2_trans: Vec2 = V2.create(model.transforms.t.x, model.transforms.t.y);
+        const v2_scale: Vec2 = V2.create(model.transforms.s.x, model.transforms.s.y);
+
+        // Vector to translate the pivot to the center of the world
+        const v2_pivot_to_center: Vec2 = V2.create(-pivot.transforms.t.x,
+                                                   -pivot.transforms.t.y);
+        // Vector to translate the pivot back to its original position
+        const v2_center_to_pivot: Vec2 = V2.create(pivot.transforms.t.x,
+                                                   pivot.transforms.t.y);
+
+        // Transform matrices for the model
+        const scaleMatrix: Mat3 = M3.scale(v2_scale);
+        const pivotToCenter: Mat3 = M3.translation(v2_pivot_to_center);
+        const centerToPivot: Mat3 = M3.translation(v2_center_to_pivot);
+        const rotateMatrix: Mat3 = M3.rotation(model.transforms.rr.z);
+        const translateMatrix: Mat3 = M3.translation(v2_trans);
+
+        // Rotation around an arbitrary point, as a single matrix
+        let pivotRotation: Mat3 = M3.identity();
+        pivotRotation = M3.multiply(pivotToCenter, pivotRotation);
+        pivotRotation = M3.multiply(rotateMatrix, pivotRotation);
+        pivotRotation = M3.multiply(centerToPivot, pivotRotation);
+
+        // Create a composite transform matrix, in the order selected in the UI
+        // "A -> B -> C" means A is applied first, so the matrix is C * B * A
+        let modelTransforms: Mat3 = M3.identity();
+        switch (this.order) {
+            case 'scale -> translation -> rotation':
+                modelTransforms = M3.multiply(scaleMatrix, modelTransforms);
+                modelTransforms = M3.multiply(translateMatrix, modelTransforms);
+                modelTransforms = M3.multiply(pivotRotation, modelTransforms);
+                break;
+            case 'translation -> scale -> rotation':
+                modelTransforms = M3.multiply(translateMatrix, modelTransforms);
+                modelTransforms = M3.multiply(scaleMatrix, modelTransforms);
+                modelTransforms = M3.multiply(pivotRotation, modelTransforms);
+                break;
+            case 'rotation -> translation -> scale':
+                modelTransforms = M3.multiply(pivotRotation, modelTransforms);
+                modelTransforms = M3.multiply(translateMatrix, modelTransforms);
+                modelTransforms = M3.multiply(scaleMatrix, modelTransforms);
+                break;
+            case 'rotation -> scale -> translation':
+                modelTransforms = M3.multiply(pivotRotation, modelTransforms);
+                modelTransforms = M3.multiply(scaleMatrix, modelTransforms);
+                modelTransforms = M3.multiply(translateMatrix, modelTransforms);
+                break;
+        }
+
+        gl.useProgram(programInfo.program);
+
+        let uniforms = {
+            u_resolution: [gl.canvas.width, gl.canvas.height],
+            u_transforms: modelTransforms,
+        };
+        twgl.setUniforms(programInfo, uniforms);
+        gl.bindVertexArray(model.vao);
+        twgl.drawBufferInfo(gl, model.bufferInfo);
+
+        // Transform matrices for the pivot
+        const translateMatrixPivot: Mat3 = M3.translation(v2_center_to_pivot);
+
+        // Composite transform matrix for the pivot (only translation)
+        let pivotTransforms: Mat3 = M3.identity();
+        pivotTransforms = M3.multiply(translateMatrixPivot, pivotTransforms);
+
+        uniforms = {
+            u_resolution: [gl.canvas.width, gl.canvas.height],
+            u_transforms: pivotTransforms,
+        };
+        twgl.setUniforms(programInfo, uniforms);
+        gl.bindVertexArray(pivot.vao);
+        twgl.drawBufferInfo(gl, pivot.bufferInfo);
+    }
+
+    setupUI(): void {
+        const { gl } = this;
+        const model = this.getObject('model');
+        const pivot = this.getObject('pivot');
+
+        const gui = new GUI();
+
+        // Order in which the transforms are applied to the model
+        gui.add(this, 'order', ORDERS)
+            .onChange((value: string) => {
+                this.order = value;
+            });
+
+        const modelFolder = gui.addFolder('Model');
+
+        const traFolder = modelFolder.addFolder('Translation');
+        traFolder.add(model.transforms.t, 'x', 0, gl.canvas.width)
+            .onChange((value: number) => {
+                model.transforms.t.x = value;
+            });
+        traFolder.add(model.transforms.t, 'y', 0, gl.canvas.height)
+            .onChange((value: number) => {
+                model.transforms.t.y = value;
+            });
+
+        const rotFolder = modelFolder.addFolder('Rotation');
+        rotFolder.add(model.transforms.rr, 'z', 0, Math.PI * 2)
+            .onChange((value: number) => {
+                model.transforms.rr.z = value;
+            });
+
+        const scaFolder = modelFolder.addFolder('Scale');
+        scaFolder.add(model.transforms.s, 'x', -5, 5)
+            .onChange((value: number) => {
+                model.transforms.s.x = value;
+            });
+        scaFolder.add(model.transforms.s, 'y', -5, 5)
+            .onChange((value: number) => {
+                model.transforms.s.y = value;
+            });
+
+        const colorFolder = modelFolder.addFolder('Color');
+        colorFolder.addColor(model, 'color')
+            .onChange((value: Color) => {
+                model.color = value;
+                // Write the new colors of the face into its color buffer
+                const arrays = smileyFace(FACE_RADIUS, model.color);
+                const attribs = model.bufferInfo.attribs;
+                if (attribs) {
+                    twgl.setAttribInfoBufferFromArray(gl, attribs.a_color, arrays.a_color);
+                }
+            });
+
+        const pivotFolder = gui.addFolder('Pivot');
+        const pivotTraFolder = pivotFolder.addFolder('Translation');
+        pivotTraFolder.add(pivot.transforms.t, 'x', 0, gl.canvas.width)
+            .onChange((value: number) => {
+                pivot.transforms.t.x = value;
+            });
+        pivotTraFolder.add(pivot.transforms.t, 'y', 0, gl.canvas.height)
+            .onChange((value: number) => {
+                pivot.transforms.t.y = value;
+            });
+    }
+}
+
+/*
+ * Create the arrays for a smiley face, centered at (0, 0).
+ * The face is a polygon of 20 sides, with two triangular eyes and a mouth.
+ * The color of the face is received as a parameter.
+ */
+function smileyFace(radius: number, color: Color): twgl.Arrays {
+    // The arrays are initially empty
     const positionData: number[] = [];
     const colorData: number[] = [];
     const indexData: number[] = [];
 
-    // --- Cara: poligono de 20 lados ---
-    const lados = 20;
+    const black = [0.1, 0.1, 0.1, 1];
+    const red = [0.7, 0.1, 0.1, 1];
 
-    // Vertice 0: el centro
+    // --- Face: polygon with 20 sides ---
+    const sides = 20;
+
+    // Vertex 0: the center
     positionData.push(0, 0);
-    colorData.push(...AMARILLO);
+    colorData.push(...color);
 
-    // Vertices del borde, con coordenadas polares
-    for (let i = 0; i < lados; i++) {
-        const angulo = (2 * Math.PI * i) / lados;
-        positionData.push(radio * Math.cos(angulo), radio * Math.sin(angulo));
-        colorData.push(...AMARILLO);
+    // Vertices on the border, using polar coordinates
+    for (let i = 0; i < sides; i++) {
+        const angle = (2 * Math.PI * i) / sides;
+        positionData.push(radius * Math.cos(angle), radius * Math.sin(angle));
+        colorData.push(...color);
     }
 
-    // Un triangulo por lado: centro, vertice actual y el siguiente
-    for (let i = 0; i < lados; i++) {
-        const actual = 1 + i;
-        const siguiente = 1 + ((i + 1) % lados);
-        indexData.push(0, actual, siguiente);
+    // One triangle per side: center, current vertex and the next one
+    for (let i = 0; i < sides; i++) {
+        const current = 1 + i;
+        const next = 1 + ((i + 1) % sides);
+        indexData.push(0, current, next);
     }
 
-    // --- Ojos: un triangulo cada uno ---
-    // Ojo izquierdo
-    let inicio = positionData.length / 2;
-    positionData.push(-0.45 * radio, 0.15 * radio);
-    positionData.push(-0.15 * radio, 0.15 * radio);
-    positionData.push(-0.30 * radio, 0.50 * radio);
-    colorData.push(...NEGRO, ...NEGRO, ...NEGRO);
-    indexData.push(inicio, inicio + 1, inicio + 2);
+    // --- Eyes: one triangle each ---
+    // Left eye
+    let start = positionData.length / 2;
+    positionData.push(-0.45 * radius, 0.15 * radius);
+    positionData.push(-0.15 * radius, 0.15 * radius);
+    positionData.push(-0.30 * radius, 0.50 * radius);
+    colorData.push(...black, ...black, ...black);
+    indexData.push(start, start + 1, start + 2);
 
-    // Ojo derecho
-    inicio = positionData.length / 2;
-    positionData.push(0.15 * radio, 0.15 * radio);
-    positionData.push(0.45 * radio, 0.15 * radio);
-    positionData.push(0.30 * radio, 0.50 * radio);
-    colorData.push(...NEGRO, ...NEGRO, ...NEGRO);
-    indexData.push(inicio, inicio + 1, inicio + 2);
+    // Right eye
+    start = positionData.length / 2;
+    positionData.push(0.15 * radius, 0.15 * radius);
+    positionData.push(0.45 * radius, 0.15 * radius);
+    positionData.push(0.30 * radius, 0.50 * radius);
+    colorData.push(...black, ...black, ...black);
+    indexData.push(start, start + 1, start + 2);
 
-    // --- Boca: medio circulo hacia abajo (sonrisa) ---
-    const ladosBoca = 10;
-    const radioBoca = 0.55 * radio;
-    const centroBocaY = -0.15 * radio;
+    // --- Mouth: half circle facing down (a smile) ---
+    const mouthSides = 10;
+    const mouthRadius = 0.55 * radius;
+    const mouthCenterY = -0.15 * radius;
 
-    // Centro de la boca
-    inicio = positionData.length / 2;
-    positionData.push(0, centroBocaY);
-    colorData.push(...ROJO);
+    // Center of the mouth
+    start = positionData.length / 2;
+    positionData.push(0, mouthCenterY);
+    colorData.push(...red);
 
-    // Vertices de la boca, de 180 a 360 grados
-    for (let i = 0; i <= ladosBoca; i++) {
-        const angulo = Math.PI + (Math.PI * i) / ladosBoca;
-        positionData.push(radioBoca * Math.cos(angulo),
-                          centroBocaY + radioBoca * Math.sin(angulo));
-        colorData.push(...ROJO);
+    // Vertices of the mouth, from 180 to 360 degrees
+    for (let i = 0; i <= mouthSides; i++) {
+        const angle = Math.PI + (Math.PI * i) / mouthSides;
+        positionData.push(mouthRadius * Math.cos(angle),
+                          mouthCenterY + mouthRadius * Math.sin(angle));
+        colorData.push(...red);
     }
 
-    for (let i = 0; i < ladosBoca; i++) {
-        indexData.push(inicio, inicio + 1 + i, inicio + 2 + i);
+    for (let i = 0; i < mouthSides; i++) {
+        indexData.push(start, start + 1 + i, start + 2 + i);
     }
 
-    // Objeto final con los arreglos
+    // Build the final object with the arrays for positions, colors, and indices
     const arrays: twgl.Arrays = {
         a_position: { numComponents: 2, data: positionData },
         a_color:    { numComponents: 4, data: colorData },
@@ -119,16 +287,20 @@ function cara(radio: number): twgl.Arrays {
     return arrays;
 }
 
-// Genera el pivote: un rombo gris centrado en (0, 0)
-function pivote(tamano: number): twgl.Arrays {
-    const arrays: twgl.Arrays = {
+/*
+ * Create the arrays for a gray diamond, centered at (0, 0).
+ * Used to show the position of the pivot.
+ */
+function diamond(size: number): twgl.Arrays {
+    let arrays = {
         a_position: {
             numComponents: 2,
             data: [
-                tamano, 0,    // derecha
-                0, tamano,    // arriba
-                -tamano, 0,   // izquierda
-                0, -tamano,   // abajo
+                // A diamond shape
+                size, 0,
+                0, size,
+                -size, 0,
+                0, -size,
             ]
         },
         a_color: {
@@ -142,8 +314,8 @@ function pivote(tamano: number): twgl.Arrays {
         },
         indices: {
             numComponents: 3,
-            // Dos triangulos forman el rombo
             data: [
+                // Two triangles
                 0, 1, 2,
                 2, 3, 0,
             ]
@@ -153,153 +325,23 @@ function pivote(tamano: number): twgl.Arrays {
     return arrays;
 }
 
+/*
+ * Main function to initialize the WebGL context, create the scene, and set up the UI.
+ */
 function main(): void {
     const canvas = document.querySelector('canvas');
     if (!canvas) {
         throw new Error('No canvas element found in the document');
     }
+
     const gl = canvas.getContext('webgl2');
     if (!gl) {
         throw new Error('WebGL2 is not supported by this browser');
     }
 
-    const programInfo = twgl.createProgramInfo(gl, [vsGLSL, fsGLSL]);
-
-    // Cara: su propio buffer y VAO
-    const caraBuffer = twgl.createBufferInfoFromArrays(gl, cara(150));
-    const caraVao = twgl.createVAOFromBufferInfo(gl, programInfo, caraBuffer);
-
-    // Pivote: otro buffer y otro VAO, con el mismo programInfo
-    const pivoteBuffer = twgl.createBufferInfoFromArrays(gl, pivote(30));
-    const pivoteVao = twgl.createVAOFromBufferInfo(gl, programInfo, pivoteBuffer);
-
-    if (!caraVao || !pivoteVao) {
-        throw new Error('No se pudo crear el VAO');
-    }
-
-    // Ajustar el canvas antes de calcular las posiciones iniciales
-    twgl.resizeCanvasToDisplaySize(canvas);
-
-    // Posiciones iniciales: la cara al centro y el pivote 250 px a la izquierda
-    datosCara.t.x = gl.canvas.width / 2;
-    datosCara.t.y = gl.canvas.height / 2;
-    datosPivote.t.x = gl.canvas.width / 2 - 250;
-    datosPivote.t.y = gl.canvas.height / 2;
-
-    setupUI(gl);
-
-    // Dibujar en cada frame
-    const frame = (): void => {
-        drawScene(gl, programInfo, caraVao, caraBuffer, pivoteVao, pivoteBuffer);
-        requestAnimationFrame(frame);
-    };
-    requestAnimationFrame(frame);
-}
-
-// Menu de lil-gui, con la misma estructura de la actividad
-function setupUI(gl: WebGL2RenderingContext): void {
-    const gui = new GUI();
-
-    // Dropdown para elegir el orden de las transformaciones
-    gui.add(datosCara, 'order', ORDENES);
-
-    const modelFolder = gui.addFolder('Model');
-
-    const traFolder = modelFolder.addFolder('Translation');
-    traFolder.add(datosCara.t, 'x', 0, gl.canvas.width);
-    traFolder.add(datosCara.t, 'y', 0, gl.canvas.height);
-
-    const rotFolder = modelFolder.addFolder('Rotation');
-    rotFolder.add(datosCara.rr, 'z', 0, Math.PI * 2);
-
-    const scaFolder = modelFolder.addFolder('Scale');
-    scaFolder.add(datosCara.s, 'x', -5, 5);
-    scaFolder.add(datosCara.s, 'y', -5, 5);
-
-    const colorFolder = modelFolder.addFolder('Color');
-    colorFolder.addColor(datosCara, 'color');
-
-    const pivotFolder = gui.addFolder('Pivot');
-    const pivotTraFolder = pivotFolder.addFolder('Translation');
-    pivotTraFolder.add(datosPivote.t, 'x', 0, gl.canvas.width);
-    pivotTraFolder.add(datosPivote.t, 'y', 0, gl.canvas.height);
-}
-
-// Matriz de la cara. El orden de las transformaciones solo esta aqui.
-function matrizCara(): Mat3 {
-    const posPivote = V2.create(datosPivote.t.x, datosPivote.t.y);
-
-    const escala = M3.scale(V2.create(datosCara.s.x, datosCara.s.y));
-    const traslacion = M3.translation(V2.create(datosCara.t.x, datosCara.t.y));
-
-    // Rotacion alrededor del pivote, como un solo bloque:
-    // llevar el pivote al origen, rotar y regresar
-    let rotacion = M3.translation(V2.scale(posPivote, -1));
-    rotacion = M3.multiply(M3.rotation(datosCara.rr.z), rotacion);
-    rotacion = M3.multiply(M3.translation(posPivote), rotacion);
-
-    // Cada multiply pone la nueva matriz a la izquierda,
-    // asi que se aplican en el orden en que aparecen (A -> B -> C da C * B * A)
-    let m = M3.identity();
-    switch (datosCara.order) {
-        case 'scale -> translation -> rotation':
-            m = M3.multiply(escala, m);
-            m = M3.multiply(traslacion, m);
-            m = M3.multiply(rotacion, m);
-            break;
-        case 'translation -> scale -> rotation':
-            m = M3.multiply(traslacion, m);
-            m = M3.multiply(escala, m);
-            m = M3.multiply(rotacion, m);
-            break;
-        case 'rotation -> translation -> scale':
-            m = M3.multiply(rotacion, m);
-            m = M3.multiply(traslacion, m);
-            m = M3.multiply(escala, m);
-            break;
-        case 'rotation -> scale -> translation':
-            m = M3.multiply(rotacion, m);
-            m = M3.multiply(escala, m);
-            m = M3.multiply(traslacion, m);
-            break;
-    }
-    return m;
-}
-
-// Dibuja la cara y el pivote con sus matrices
-function drawScene(
-    gl: WebGL2RenderingContext,
-    programInfo: twgl.ProgramInfo,
-    caraVao: WebGLVertexArrayObject,
-    caraBuffer: twgl.BufferInfo,
-    pivoteVao: WebGLVertexArrayObject,
-    pivoteBuffer: twgl.BufferInfo,
-): void {
-    // El canvas es el del HTML, no uno offscreen
-    twgl.resizeCanvasToDisplaySize(gl.canvas as HTMLCanvasElement);
-
-    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-
-    gl.useProgram(programInfo.program);
-
-    // --- Cara ---
-    gl.bindVertexArray(caraVao);
-    twgl.setUniforms(programInfo, {
-        u_resolution: [gl.canvas.width, gl.canvas.height],
-        u_transforms: matrizCara(),
-        u_color: datosCara.color,
-    });
-    twgl.drawBufferInfo(gl, caraBuffer);
-
-    // --- Pivote: solo traslacion ---
-    const matrizPivote = M3.translation(V2.create(datosPivote.t.x, datosPivote.t.y));
-
-    gl.bindVertexArray(pivoteVao);
-    twgl.setUniforms(programInfo, {
-        u_resolution: [gl.canvas.width, gl.canvas.height],
-        u_transforms: matrizPivote,
-    });
-    twgl.drawBufferInfo(gl, pivoteBuffer);
+    const scene = new FaceScene(gl);
+    scene.setupUI();
+    scene.draw(0);
 }
 
 main()
